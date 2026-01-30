@@ -1,0 +1,27 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Configure Skippy N8N Assistant",
+        "description": "Enter your N8N webhook URL to connect Skippy to your N8N workflow.",
+        "data": {
+          "webhook_url": "N8N Webhook URL",
+          "timeout": "Timeout (seconds)",
+          "agent_id": "Agent ID"
+        },
+        "data_description": {
+          "webhook_url": "The full URL of your N8N webhook trigger (e.g., https://n8n.example.com/webhook/skippy)",
+          "timeout": "How long to wait for N8N to respond (5-120 seconds)",
+          "agent_id": "Identifier for this assistant instance"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to N8N webhook. Please verify the URL is correct and N8N is running.",
+      "unknown": "Unexpected error occurred"
+    },
+    "abort": {
+      "already_configured": "This webhook is already configured"
+    }
+  }
+}
