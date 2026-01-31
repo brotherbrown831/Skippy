@@ -5,6 +5,7 @@
       "parameters": {
         "httpMethod": "POST",
         "path": "skippy-test",
+        "responseMode": "responseNode",
         "options": {}
       },
       "id": "webhook-trigger",
@@ -17,7 +18,7 @@
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ JSON.stringify({ response: 'Hello! I heard you say: ' + $json.text }) }}",
+        "responseBody": "={{ JSON.stringify({ response: 'Hello! I heard you say: ' + $json.body.text }) }}",
         "options": {}
       },
       "id": "respond-webhook",

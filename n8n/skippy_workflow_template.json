@@ -5,6 +5,7 @@
       "parameters": {
         "httpMethod": "POST",
         "path": "skippy",
+        "responseMode": "responseNode",
         "options": {}
       },
       "id": "webhook-trigger",
@@ -21,19 +22,19 @@
             {
               "id": "user-text",
               "name": "userText",
-              "value": "={{ $json.text }}",
+              "value": "={{ $json.body.text }}",
               "type": "string"
             },
             {
               "id": "conversation-id",
               "name": "conversationId",
-              "value": "={{ $json.conversation_id }}",
+              "value": "={{ $json.body.conversation_id }}",
               "type": "string"
             },
             {
               "id": "language",
               "name": "language",
-              "value": "={{ $json.language }}",
+              "value": "={{ $json.body.language }}",
               "type": "string"
             }
           ]
