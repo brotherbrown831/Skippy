@@ -1,0 +1,203 @@
+{
+  "name": "Skippy Memory Retriever",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "memory/retrieve",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "f62c45c2-2187-4116-8294-a1e750391ec6",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        -976,
+        -384
+      ],
+      "webhookId": "913ccc1b-70d7-4546-8502-1345bcc63847"
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json.body;\n\nreturn {\n  json: {\n    query: input.query,\n    user_id: input.user_id || 'nolan',\n    limit: input.limit || 3\n  }\n};"
+      },
+      "id": "734bf40f-34e6-458c-b2bd-80925d9fc9e3",
+      "name": "Extract Query",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -752,
+        -384
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/embeddings",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"text-embedding-3-small\",\n  \"input\": \"{{ $json.query }}\"\n}",
+        "options": {}
+      },
+      "id": "2e38ea98-2129-425a-b7c6-1ff61d6af6a0",
+      "name": "Generate Query Embedding",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        -544,
+        -384
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "Kq3mppQCKKcEpa1u",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM (\n  SELECT\n    m.memory_id,\n    m.content,\n    m.category,\n    m.confidence_score,\n    1 - (m.embedding <=> ('{{ $json.embedding_vector }}')::vector) AS similarity\n  FROM semantic_memories m\n  WHERE m.user_id = 'nolan'\n    AND m.status = 'active'\n    AND m.embedding IS NOT NULL\n) sub\nORDER BY similarity DESC\nLIMIT {{ $json.limit }};",
+        "options": {}
+      },
+      "id": "672946a0-4553-4963-865a-123b48976fe7",
+      "name": "Search Similar Memories",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        96,
+        -384
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "Rd8ANpBy5EzwTFLI",
+          "name": "Postgress Skippy"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const memories = $input.all();\n\nif (!memories || memories.length === 0) {\n  return {\n    json: {\n      query: $('Prepare Search').item.json.query,\n      memories: [],\n      count: 0\n    }\n  };\n}\n\nconst results = memories.map(item => {\n  const data = item.json;\n  return {\n    memory_id: data.memory_id,\n    content: data.content,\n    category: data.category,\n    confidence: data.confidence_score,\n    similarity: parseFloat(data.similarity)\n  };\n});\n\nreturn {\n  json: {\n    query: $('Prepare Search').item.json.query,\n    memories: results,\n    count: results.length\n  }\n};"
+      },
+      "id": "58ee2eaa-d64f-475c-9362-19da03c7b991",
+      "name": "Format Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        336,
+        -384
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "9e0939be-961f-4b52-b495-a50a9d5f0f19",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        560,
+        -384
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const embeddingData = $input.first().json;\nconst queryData = $('Extract Query').item.json;\n\nconst embedding = JSON.stringify(embeddingData.data[0].embedding);\n\nreturn {\n  json: {\n    user_id: queryData.user_id,\n    limit: queryData.limit,\n    embedding_vector: embedding,\n    query: queryData.query\n  }\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -320,
+        -384
+      ],
+      "id": "998e3cd3-e66a-4158-81ae-58a14895de4a",
+      "name": "Prepare Search"
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Extract Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Query": {
+      "main": [
+        [
+          {
+            "node": "Generate Query Embedding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Query Embedding": {
+      "main": [
+        [
+          {
+            "node": "Prepare Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Similar Memories": {
+      "main": [
+        [
+          {
+            "node": "Format Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Results": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Search": {
+      "main": [
+        [
+          {
+            "node": "Search Similar Memories",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

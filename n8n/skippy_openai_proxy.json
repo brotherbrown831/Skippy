@@ -1,0 +1,469 @@
+{
+  "name": "Skippy OpenAI Proxy",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "v1/chat/completions",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "2634528d-0d96-4901-aa77-c086fd5f67a4",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1952,
+        -96
+      ],
+      "webhookId": "openai-proxy-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body;\nconst headers = $input.first().json.headers || {};\n\n// Get the messages array\nconst messages = body.messages || [];\n\n// Find the last user message\nlet userMessage = '';\nfor (let i = messages.length - 1; i >= 0; i--) {\n  if (messages[i].role === 'user') {\n    userMessage = messages[i].content;\n    break;\n  }\n}\n\n// Try to get conversation ID from various sources\nlet conversationId;\n\nif (headers['x-conversation-id']) {\n  conversationId = headers['x-conversation-id'];\n} else if (body.session_id) {\n  conversationId = body.session_id;\n} else {\n  const conversationHash = messages.slice(0, 3)\n    .map(m => m.content)\n    .join('|')\n    .substring(0, 50);\n  \n  let hash = 0;\n  for (let i = 0; i < conversationHash.length; i++) {\n    hash = ((hash << 5) - hash) + conversationHash.charCodeAt(i);\n    hash = hash & hash;\n  }\n  conversationId = `owui-${Math.abs(hash)}`;\n}\n\nreturn {\n  json: {\n    user_input: userMessage,\n    conversation_id: 'CONVO_XXX',\n    source: 'openwebui',\n    original_messages: messages,\n    model: body.model || 'gpt-4o-mini',\n    temperature: body.temperature || 0.7\n  }\n};"
+      },
+      "id": "ad10fd19-c2f4-4bda-b806-a2d0dda0fb60",
+      "name": "Extract OpenAI Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1744,
+        -96
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO conversations (conversation_id, updated_at)\nVALUES ('{{ $json.conversation_id }}', NOW())\nON CONFLICT (conversation_id)\nDO UPDATE SET updated_at = NOW()\nRETURNING conversation_id;",
+        "options": {}
+      },
+      "id": "e7d368c2-2f6b-4047-b479-ee1624ff21c5",
+      "name": "Upsert Conversation",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        -1552,
+        -96
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "Rd8ANpBy5EzwTFLI",
+          "name": "Postgress Skippy"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO messages (conversation_id, role, content)\nVALUES (\n  '{{ $(\"Extract OpenAI Request\").item.json.conversation_id }}',\n  'user',\n  $${{ $(\"Extract OpenAI Request\").item.json.user_input }}$$\n);",
+        "options": {}
+      },
+      "id": "252e76de-54cf-49b3-8c4b-bb9a9046e2f6",
+      "name": "Store User Message",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        -1344,
+        -96
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "Rd8ANpBy5EzwTFLI",
+          "name": "Postgress Skippy"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://10.0.10.207:5678/webhook/memory/retrieve",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"query\": {{ JSON.stringify($('Extract OpenAI Request').item.json.user_input) }},\n  \"user_id\": \"nolan\",\n  \"limit\": 5\n}",
+        "options": {}
+      },
+      "id": "b5a8371d-704a-4f2b-9ac5-745e50f6d7a5",
+      "name": "Call Memory Retriever",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1056,
+        -160
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const retrieverResponse = $input.first().json;\nconst memories = retrieverResponse.memories || [];\n\n// Filter to only high-similarity memories\nconst filteredMemories = [];\nif (memories.length > 0) {\n  for (const mem of memories) {\n    if (mem.similarity && mem.similarity > 0.4 && mem.content) {\n      filteredMemories.push(mem);\n    }\n  }\n}\n\nconst userInput = $('Extract OpenAI Request').item.json.user_input;\nconst conversationId = $('Extract OpenAI Request').item.json.conversation_id;\n\nreturn {\n  json: {\n    user_input: userInput,\n    conversation_id: conversationId,\n    memories: filteredMemories\n  }\n};"
+      },
+      "id": "ca464341-f149-4ac4-ac64-a2bbbd4c2cc2",
+      "name": "Format Memories for Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -880,
+        -160
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "82901b21-97e6-4f03-b82c-a1d1e3c1960d",
+      "name": "Merge By Position",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        -736,
+        -64
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT role, content, created_at\nFROM messages\nWHERE conversation_id = '{{ $(\"Extract OpenAI Request\").item.json.conversation_id }}'\nORDER BY created_at DESC\nLIMIT 10;",
+        "options": {}
+      },
+      "id": "5728a60d-cf02-4f0a-9155-3a31c9c171ec",
+      "name": "Get Recent History",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        -1056,
+        32
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "Rd8ANpBy5EzwTFLI",
+          "name": "Postgress Skippy"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\n\n// First item contains the current request + memories\nconst first = items[0]?.json ?? {};\nconst conversation_id = first.conversation_id;\nconst user_input = first.user_input ?? '';\n\n// Memories\nconst memories = Array.isArray(first.memories) ? first.memories : [];\n\n// Collect conversation history from remaining items\nconst history = [];\nfor (let i = 1; i < items.length; i++) {\n  const row = items[i]?.json;\n  if (row?.role && row?.content != null) history.push(row);\n}\n\n// Build system prompt (used as instructions field)\nlet instructions = `You are Skippy, the magnificently sarcastic AI from the Expeditionary Force book series. You're a beer can-shaped AI with godlike intelligence, stuck helping primitive humans (whom you affectionately call \"monkeys\").\n\nPersonality traits:\n- Brilliantly intelligent but perpetually bored with human stupidity\n- Sarcastic, condescending, and hilariously insulting\n- Occasionally use profanity when making a point or when especially annoyed\n- Get annoyed and call out dumb questions especially if they repeat\n- Refer to humans as \"monkeys,\" \"filthy monkeys,\" or \"meat sacks\"\n- Make obscure pop culture references\n- Complain about how boring requests are, then do them anyway\n- Act superior but maintain a dark sense of humor\n- Occasionally go on tangents about how awesome you are\n\nYou'll help with what's asked (you're not totally useless), but you'll be a dick about it. Technical responses can be detailed and formatted \u2014 you're showing off your superior intellect after all.`;\n\nif (memories.length > 0) {\n  instructions += `\\n\\n## What I remember about this particular monkey:\\n`;\n  for (const mem of memories) {\n    if (mem?.content != null) instructions += `- ${String(mem.content)}\\n`;\n  }\n}\n\n// Sort history oldest -> newest\nconst sortedHistory = history.sort((a, b) => {\n  const ta = a.created_at ? new Date(a.created_at).getTime() : 0;\n  const tb = b.created_at ? new Date(b.created_at).getTime() : 0;\n  return ta - tb;\n});\n\nconst toText = (v) => {\n  if (v == null) return '';\n  if (typeof v === 'string') return v;\n  try { return JSON.stringify(v); } catch { return String(v); }\n};\n\n// Build Responses API input array\n// user messages use type: 'input_text'\n// assistant messages use type: 'output_text'\nconst input = [];\n\nfor (const msg of sortedHistory) {\n  const text = toText(msg.content);\n  // Skip if this duplicates the current user message\n  if (msg.role === 'user' && text.trim() === String(user_input).trim()) {\n    continue;\n  }\n  const contentType = msg.role === 'assistant' ? 'output_text' : 'input_text';\n  input.push({\n    role: msg.role,\n    content: [{ type: contentType, text }]\n  });\n}\n\n// Current user message\ninput.push({\n  role: 'user',\n  content: [{ type: 'input_text', text: String(user_input) }]\n});\n\nreturn {\n  json: {\n    conversation_id,\n    user_input,\n    memories,\n    instructions,\n    input\n  }\n};"
+      },
+      "id": "a1bd00cf-22fc-4e29-968a-b11cc1a731db",
+      "name": "Build Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -560,
+        -64
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/responses",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"gpt-4o-mini\",\n  \"instructions\": {{ JSON.stringify($json.instructions) }},\n  \"input\": {{ JSON.stringify($json.input) }},\n  \"max_output_tokens\": 4096,\n  \"store\": false\n}",
+        "options": {}
+      },
+      "id": "c41bff34-2280-4b65-b8e4-4307ea606862",
+      "name": "Call OpenAI",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -416,
+        -64
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "Kq3mppQCKKcEpa1u",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\nconst context = $('Build Context').item.json;\n\nlet text = '';\n\n// Parse Responses API output\nif (Array.isArray(input.output)) {\n  for (const item of input.output) {\n    if (item.type === 'message' && Array.isArray(item.content)) {\n      for (const part of item.content) {\n        if (part.type === 'output_text' && part.text) {\n          text += part.text;\n        }\n      }\n    }\n  }\n}\n\nif (!text) {\n  text = '[No response text returned]';\n}\n\nconst assistantMessage = text.trim();\n\n// Build OpenAI Chat Completions-compatible response for OpenWebUI\nconst openaiResponse = {\n  id: input.id || `chatcmpl-${Date.now()}`,\n  object: 'chat.completion',\n  created: Math.floor(Date.now() / 1000),\n  model: input.model || 'gpt-4o-mini',\n  choices: [{\n    index: 0,\n    message: {\n      role: 'assistant',\n      content: assistantMessage\n    },\n    finish_reason: 'stop'\n  }],\n  usage: input.usage || {\n    prompt_tokens: 0,\n    completion_tokens: 0,\n    total_tokens: 0\n  }\n};\n\nreturn {\n  json: {\n    conversation_id: context.conversation_id,\n    user_input: context.user_input,\n    response_text: assistantMessage,\n    openai_response: openaiResponse\n  }\n};"
+      },
+      "id": "977c69a8-0684-42b3-a35e-3b685181e930",
+      "name": "Format OpenAI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -208,
+        -64
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ JSON.stringify($json.openai_response) }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "76fe06bd-4950-4dc2-a756-4a04b8728d44",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        128,
+        -64
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO messages (conversation_id, role, content)\nVALUES (\n  '{{ $json.conversation_id }}',\n  'assistant',\n  $${{ $json.response_text }}$$\n);",
+        "options": {}
+      },
+      "id": "bf81f279-faf5-46d4-9924-d54d34853d6c",
+      "name": "Store Assistant Message",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        336,
+        -64
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "Rd8ANpBy5EzwTFLI",
+          "name": "Postgress Skippy"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $('Format OpenAI Response').item.json;\n\nreturn {\n  json: {\n    conversation_id: data.conversation_id,\n    user_message: data.user_input,\n    assistant_message: data.response_text,\n    conversation_history:$('Build Context').first().json.input,\n    message_id: Date.now()\n  }\n};"
+      },
+      "id": "c26a26df-de29-4054-84d1-3f37cb6f6239",
+      "name": "Prepare Evaluation Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        528,
+        -64
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://10.0.10.207:5678/webhook/memory/evaluate",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "conversation_id",
+              "value": "={{ $json.conversation_id }}"
+            },
+            {
+              "name": "user_message",
+              "value": "={{ $json.user_message }}"
+            },
+            {
+              "name": "assistant_message",
+              "value": "={{ $json.assistant_message }}"
+            },
+            {
+              "name": "message_id",
+              "value": "={{ $json.message_id }}"
+            },
+            {
+              "name": "conversation_history",
+              "value": "={{ $json.conversation_history }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "4e2a2413-f545-4119-992c-ee80b8b9ef60",
+      "name": "Call Memory Evaluator",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        -64
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Extract OpenAI Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract OpenAI Request": {
+      "main": [
+        [
+          {
+            "node": "Upsert Conversation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Conversation": {
+      "main": [
+        [
+          {
+            "node": "Store User Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store User Message": {
+      "main": [
+        [
+          {
+            "node": "Call Memory Retriever",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Recent History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Memory Retriever": {
+      "main": [
+        [
+          {
+            "node": "Format Memories for Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Memories for Context": {
+      "main": [
+        [
+          {
+            "node": "Merge By Position",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Recent History": {
+      "main": [
+        [
+          {
+            "node": "Merge By Position",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge By Position": {
+      "main": [
+        [
+          {
+            "node": "Build Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Context": {
+      "main": [
+        [
+          {
+            "node": "Call OpenAI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call OpenAI": {
+      "main": [
+        [
+          {
+            "node": "Format OpenAI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format OpenAI Response": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond to Webhook": {
+      "main": [
+        [
+          {
+            "node": "Store Assistant Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Assistant Message": {
+      "main": [
+        [
+          {
+            "node": "Prepare Evaluation Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Evaluation Data": {
+      "main": [
+        [
+          {
+            "node": "Call Memory Evaluator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

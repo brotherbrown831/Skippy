@@ -1,0 +1,472 @@
+{
+  "name": "Skippy Memory Evaluator",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "memory/evaluate",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "a3f5b32c-d797-4713-a70c-9c89108c2f0d",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        -1136,
+        -224
+      ],
+      "webhookId": "9f4925e9-7ea3-4f82-a9ed-fe87e4cf67c9"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Webhook payload is nested under `body`\nconst payload = $input.first().json.body || {};\n\n// Accept both old and new formats\nconst assistantText =\n  payload.assistant_message ||\n  payload.response_text ||\n  '';\n\nreturn {\n  json: {\n    conversation_id: payload.conversation_id,\n    user_message: payload.user_message,\n    assistant_message: assistantText,\n    conversation_history: $input.first().json.body.conversation_history,\n    message_id: payload.message_id\n  }\n};"
+      },
+      "id": "0698772b-407a-4956-9d63-a73844399edc",
+      "name": "Extract Message Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -912,
+        -224
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "gpt-5.2"
+            },
+            {
+              "name": "messages",
+              "value": "={{ [\n  {\n    \"role\": \"system\",\n    \"content\": \"You are a memory evaluator for a long-term semantic memory system.\\n\\nYour job is to:\\n1. Decide whether a conversation contains information worth storing long-term. look at the entire included conversation history to determine the total context of the fact\\n2. If so, rewrite the information into a SINGLE, self-contained memory optimized for semantic retrieval using embeddings\\n\\nSTORE information if it includes:\\n- explicit direction from the user to store information where are not it is valueable for future semantic search\\n- Facts about the user\\n- Facts about family members or close relationships\\n- Important projects, responsibilities, or goals\\n- Stable preferences or opinions\\n- Ongoing commitments\\n- Technical configurations or systems\\n- Recurring events or dates\\n\\nDO NOT STORE:\\n- Greetings or small talk\\n- One-off questions or tests\\n- Temporary states\\n- Generic or impersonal information\\n\\nCRITICAL RULES FOR extracted_fact:\\n- Rewrite the fact so it is understandable without conversation context\\n- ALWAYS include a semantic category prefix at the beginning\\n- Use clear, natural language\\n- Prefer complete sentences\\n\\nRequired prefixes:\\nFamily:\\nPerson:\\nPreference:\\nProject:\\nTechnical:\\nRecurring Event:\\nFact:\\n\\nRespond with JSON ONLY:\\n{\\n  \\\"should_store\\\": true/false,\\n  \\\"reason\\\": \\\"brief explanation\\\",\\n  \\\"extracted_fact\\\": \\\"rewritten fact or null\\\",\\n  \\\"category\\\": \\\"family | person | preference | project | technical | recurring_event | fact | null\\\",\\n  \\\"confidence\\\": 0.0-1.0\\n}\"\n  },\n\n  ...$json.conversation_history.map(m => ({\n    role: m.role,\n    content: m.content?.[0]?.text || \"\"\n  })),\n\n  {\n    \"role\": \"user\",\n    \"content\": \"User: \" + $json.user_message + \"\\nAssistant: \" + $json.assistant_message\n  }\n] }}"
+            },
+            {
+              "name": "response_format",
+              "value": "={{ {\"type\": \"json_object\"} }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "245f0f7d-6273-49b9-844e-5b8989d5b17e",
+      "name": "Call Evaluation LLM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        -688,
+        -224
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "Kq3mppQCKKcEpa1u",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const openaiResponse = $input.first().json;\nconst messageData = $('Extract Message Data').item.json;\n\nlet evaluation;\ntry {\n  const content = openaiResponse.choices[0].message.content;\n  evaluation = JSON.parse(content);\n} catch (e) {\n  evaluation = {\n    should_store: false,\n    reason: \"Failed to parse evaluation\",\n    extracted_fact: null,\n    category: null,\n    confidence: 0\n  };\n}\n\nreturn {\n  json: {\n    conversation_id: messageData.conversation_id,\n    message_id: messageData.message_id,\n    should_store: Boolean(evaluation.should_store),\n    reason: evaluation.reason,\n    extracted_fact: evaluation.extracted_fact || null,\n    category: evaluation.category || null,\n    confidence: evaluation.confidence || 0.5\n  }\n};"
+      },
+      "id": "83c89dbe-8eaa-4bdb-9284-931cecc8e19a",
+      "name": "Parse Evaluation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -480,
+        -224
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO semantic_memories (\n  user_id,\n  content,\n  embedding,\n  confidence_score,\n  status,\n  created_from_conversation_id,\n  category\n)\nVALUES (\n  '{{ $(\"Prepare Insert\").item.json.user_id }}',\n  $${{ $(\"Prepare Insert\").item.json.content }}$$,\n  ('{{ $(\"Prepare Insert\").item.json.embedding }}')::vector,\n  {{ $(\"Prepare Insert\").item.json.confidence_score }},\n  '{{ $(\"Prepare Insert\").item.json.status }}',\n  '{{ $(\"Prepare Insert\").item.json.conversation_id }}',\n  '{{ $(\"Prepare Insert\").item.json.category }}'\n)\nRETURNING memory_id, content, category;\n",
+        "options": {}
+      },
+      "id": "34f912d4-2f71-4aa3-a3a9-8d61732b215a",
+      "name": "Store Memory",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        688,
+        -160
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "Rd8ANpBy5EzwTFLI",
+          "name": "Postgress Skippy"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "return {\n  json: {\n    action: 'skipped',\n    reason: $json.reason,\n    conversation_id: $json.conversation_id\n  }\n};"
+      },
+      "id": "82069c94-2dfe-41d6-970d-4b09fc1a867f",
+      "name": "Log Decision",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        32,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "ac5396a2-103e-4946-9c02-17825081b20e",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        944,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.should_store }}",
+                    "rightValue": true,
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "equals"
+                    },
+                    "id": "3353851f-a768-4df8-8b49-434970b75c17"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "true"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "false"
+        }
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        -272,
+        -224
+      ],
+      "id": "75d6ecc3-04d0-44bc-b5a0-9887fd07e486",
+      "name": "Switch"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/embeddings",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"text-embedding-3-small\",\n  \"input\": \"{{ $json.extracted_fact }}\"\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -64,
+        -240
+      ],
+      "id": "cfb9bde2-4c55-40c8-b135-f4c9e7681d0f",
+      "name": "HTTP Request",
+      "credentials": {
+        "openAiApi": {
+          "id": "Kq3mppQCKKcEpa1u",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const evalData = $('Parse Evaluation').item.json;\nconst embeddingData = $input.item.json;\n\nconst embedding = JSON.stringify(embeddingData.data[0].embedding);\n\nreturn {\n  json: {\n    user_id: 'nolan',\n    content: evalData.extracted_fact,\n    embedding: embedding,\n    confidence_score: evalData.confidence,\n    status: 'active',\n    conversation_id: evalData.conversation_id,\n    category: evalData.category\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        128,
+        -240
+      ],
+      "id": "7b83d828-aaed-4938-96b9-3cc3e34ca652",
+      "name": "Prepare Insert"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM (\n  SELECT\n    memory_id,\n    content,\n    confidence_score,\n    reinforcement_count,\n    1 - (embedding <=> ('{{ $json.embedding }}')::vector) AS similarity\n  FROM semantic_memories\n  WHERE user_id = '{{ $json.user_id }}'\n    AND status = 'active'\n    AND embedding IS NOT NULL\n) sub\nORDER BY similarity DESC\nLIMIT 1;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        304,
+        -240
+      ],
+      "id": "26bceeb4-4fa2-4c76-b55b-fe5f91240bcc",
+      "name": "Check Existing or Similar Memory",
+      "alwaysOutputData": true,
+      "retryOnFail": false,
+      "executeOnce": false,
+      "credentials": {
+        "postgres": {
+          "id": "Rd8ANpBy5EzwTFLI",
+          "name": "Postgress Skippy"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ Number($json.similarity) }}",
+                    "rightValue": 0.8,
+                    "operator": {
+                      "type": "number",
+                      "operation": "gte"
+                    },
+                    "id": "2135aa81-dd16-4307-897d-1b54f0a9a265"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "true"
+            }
+          ]
+        },
+        "looseTypeValidation": true,
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "false"
+        }
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        480,
+        -240
+      ],
+      "id": "35214dd6-24a8-44c7-87b2-d3ac1437d518",
+      "name": "Is Similar Memory?"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE semantic_memories\nSET\n  reinforcement_count = reinforcement_count + 1,\n  confidence_score = LEAST(confidence_score + 0.05, 1.0),\n  updated_at = NOW()\nWHERE memory_id = {{ $json.memory_id }}\nRETURNING\n  memory_id,\n  content,\n  confidence_score,\n  reinforcement_count;\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        688,
+        -336
+      ],
+      "id": "86d65b17-d5ff-454d-a918-e3e5dee05b43",
+      "name": "Reinforce Excisting Memory",
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "Rd8ANpBy5EzwTFLI",
+          "name": "Postgress Skippy"
+        }
+      },
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Extract Message Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Message Data": {
+      "main": [
+        [
+          {
+            "node": "Call Evaluation LLM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Evaluation LLM": {
+      "main": [
+        [
+          {
+            "node": "Parse Evaluation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Evaluation": {
+      "main": [
+        [
+          {
+            "node": "Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Memory": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Decision": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Prepare Insert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Insert": {
+      "main": [
+        [
+          {
+            "node": "Check Existing or Similar Memory",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Existing or Similar Memory": {
+      "main": [
+        [
+          {
+            "node": "Is Similar Memory?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Similar Memory?": {
+      "main": [
+        [
+          {
+            "node": "Reinforce Excisting Memory",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Store Memory",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reinforce Excisting Memory": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

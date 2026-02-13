@@ -1,93 +1,109 @@
 # Skippy
 
-A Home Assistant custom integration that connects Wyoming voice satellites to N8N workflows via webhooks, enabling AI-powered voice conversations.
+An AI personal assistant with long-term semantic memory, powered by Home Assistant, N8N, and PostgreSQL with pgvector. Named after the magnificently sarcastic AI from the Expeditionary Force book series.
 
 ## Architecture
 
 ```
-Wyoming Satellite → Wake Word/STT → Home Assistant → Webhook → N8N Agent → Response → HA → TTS → Satellite
+                         ┌──────────────────┐
+                         │   Input Channels  │
+                         └────────┬─────────┘
+                                  │
+                    ┌─────────────┴─────────────┐
+                    │                           │
+            ┌───────▼───────┐           ┌───────▼───────┐
+            │  HA Voice     │           │  OpenWebUI    │
+            │  Pipeline     │           │  Chat         │
+            └───────┬───────┘           └───────┬───────┘
+                    │                           │
+            ┌───────▼───────┐           ┌───────▼───────┐
+            │  Conversation │           │  OpenAI Proxy │
+            │  Memory Flow  │           │  Flow         │
+            └───────┬───────┘           └───────┬───────┘
+                    │                           │
+                    └─────────────┬─────────────┘
+                                  │
+                    ┌─────────────▼─────────────┐
+                    │     Shared Pipeline        │
+                    │  1. Store user message     │
+                    │  2. Retrieve memories      │
+                    │  3. Get conversation history│
+                    │  4. Build context + prompt  │
+                    │  5. Call OpenAI LLM        │
+                    │  6. Respond to user        │
+                    │  7. Store assistant message │
+                    │  8. Evaluate for new memory│
+                    └───────────────────────────┘
+                                  │
+                    ┌─────────────▼─────────────┐
+                    │       Data Layer           │
+                    │  PostgreSQL + pgvector     │
+                    │  ┌─────────────────────┐   │
+                    │  │ conversations       │   │
+                    │  │ messages            │   │
+                    │  │ semantic_memories   │   │
+                    │  └─────────────────────┘   │
+                    └───────────────────────────┘
 ```
 
 ## Features
 
-- Custom conversation agent for Home Assistant
-- Forwards voice queries to N8N via webhooks
-- Works with Wyoming protocol voice satellites
-- Configurable timeout and agent ID
-- Supports any N8N workflow with AI/LLM integration
+- **Voice assistant** via Home Assistant Wyoming satellites
+- **Chat interface** via OpenWebUI (OpenAI-compatible proxy)
+- **Long-term semantic memory** using pgvector embeddings
+- **Automatic memory extraction** - LLM evaluates each conversation for facts worth remembering
+- **Memory deduplication** - similar memories are reinforced rather than duplicated
+- **Conversation persistence** - all messages stored in PostgreSQL
+- **Sarcastic personality** inspired by Skippy from Expeditionary Force
 
-## Installation
+## Infrastructure
 
-### 1. Install the Custom Component
+- **Proxmox** - Hypervisor hosting all services in LXCs/VMs
+- **Home Assistant** - Home automation + voice pipeline
+- **N8N** - Workflow orchestration (all AI logic lives here)
+- **PostgreSQL + pgvector** - Conversation storage + vector similarity search
+- **OpenWebUI** - Local chat interface
+- **OpenAI API** - LLM (gpt-4o-mini) + embeddings (text-embedding-3-small)
 
-Copy the `custom_components/skippy` folder to your Home Assistant `config/custom_components/` directory:
+## N8N Workflows
 
-```
-config/
-└── custom_components/
-    └── skippy/
-        ├── __init__.py
-        ├── config_flow.py
-        ├── const.py
-        ├── conversation.py
-        ├── manifest.json
-        ├── strings.json
-        └── translations/
-            └── en.json
-```
+There are 4 workflows that make up Skippy's brain:
 
-Restart Home Assistant.
+### 1. Conversation Memory (`skippy_conversation_memory.json`)
+The main voice pipeline workflow. Receives input from Home Assistant voice satellites via webhook.
 
-### 2. Set Up N8N Workflow
+**Flow:** Webhook → Store message → Retrieve memories + Get history (parallel) → Build context → Call OpenAI → Respond → Store response → Evaluate for memory
 
-Import one of the workflow templates from the `n8n/` folder:
+### 2. OpenAI Proxy (`skippy_openai_proxy.json`)
+Exposes an OpenAI Chat Completions-compatible endpoint so OpenWebUI can talk to Skippy. Same pipeline as the voice workflow but accepts/returns OpenAI API format.
 
-- `skippy_echo_test.json` - Simple echo test to verify connectivity
-- `skippy_workflow_template.json` - Template with AI agent placeholder
+**Endpoint:** `POST /webhook/v1/chat/completions`
 
-After importing:
-1. Activate the workflow in N8N
-2. Copy the webhook URL (e.g., `https://your-n8n.com/webhook/skippy`)
+### 3. Memory Retriever (`skippy_memory_retriever.json`)
+Called by the conversation workflows to find relevant memories. Embeds the query and performs cosine similarity search against stored memories in pgvector.
 
-### 3. Configure the Integration
+**Endpoint:** `POST /webhook/memory/retrieve`
 
-1. Go to **Settings → Devices & Services → Add Integration**
-2. Search for "Skippy"
-3. Enter your N8N webhook URL
-4. Optionally adjust timeout (default: 30 seconds)
-5. Optionally set an agent ID (default: "skippy")
+### 4. Memory Evaluator (`skippy_memory_evaluator.json`)
+Called after each conversation turn. An LLM decides if the exchange contains information worth remembering long-term. If so, it extracts and rewrites the fact, embeds it, checks for duplicates, and either stores a new memory or reinforces an existing one.
 
-### 4. Configure Voice Pipeline
+**Endpoint:** `POST /webhook/memory/evaluate`
 
-1. Go to **Settings → Voice Assistants**
-2. Create or edit a voice pipeline
-3. Set **Conversation Agent** to "Skippy"
-4. Assign this pipeline to your Wyoming satellite
+**Memory categories:** `family`, `person`, `preference`, `project`, `technical`, `recurring_event`, `fact`
 
-## N8N Webhook Format
+## Home Assistant Custom Component
 
-### Request (from Home Assistant)
+The `custom_components/skippy` folder contains a Home Assistant integration that registers as a conversation agent, forwarding voice input to the N8N webhook.
 
-```json
-{
-  "text": "What's the weather like?",
-  "conversation_id": "01HQXYZ...",
-  "language": "en",
-  "agent_id": "skippy"
-}
-```
+### Installation
 
-### Response (to Home Assistant)
+1. Copy `custom_components/skippy/` to your HA `config/custom_components/` directory
+2. Restart Home Assistant
+3. Go to **Settings > Devices & Services > Add Integration** and search for "Skippy"
+4. Enter your N8N webhook URL
+5. Set the conversation agent to "Skippy" in your voice pipeline
 
-```json
-{
-  "response": "The weather is sunny with a high of 72 degrees."
-}
-```
-
-The integration also checks for alternative keys: `text`, `message`, `output`.
-
-## Configuration Options
+### Configuration Options
 
 | Option | Description | Default |
 |--------|-------------|---------|
@@ -95,29 +111,38 @@ The integration also checks for alternative keys: `text`, `message`, `output`.
 | `timeout` | Response timeout in seconds (5-120) | 30 |
 | `agent_id` | Identifier for the assistant | "skippy" |
 
-## Troubleshooting
+## Database Schema
 
-### "Failed to connect to N8N webhook"
-- Verify N8N is running and accessible from Home Assistant
-- Check the webhook URL is correct
-- Ensure the workflow is activated in N8N
+```sql
+-- Conversation tracking
+CREATE TABLE conversations (
+    conversation_id TEXT PRIMARY KEY,
+    updated_at TIMESTAMP
+);
 
-### "N8N took too long to respond"
-- Increase the timeout in the integration settings
-- Check N8N workflow performance
-- Verify your AI/LLM service is responding
+-- Message history
+CREATE TABLE messages (
+    conversation_id TEXT,
+    role TEXT,
+    content TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
 
-### Empty responses
-- Check N8N workflow returns `response` key in JSON
-- Review N8N execution logs for errors
-
-## Development
-
-This is an MVP prototype. Future enhancements could include:
-- Conversation history/memory
-- Multiple agent support
-- Home Assistant entity control via N8N
-- Custom wake word responses
+-- Semantic memory with vector embeddings
+CREATE TABLE semantic_memories (
+    memory_id SERIAL PRIMARY KEY,
+    user_id TEXT,
+    content TEXT,
+    embedding vector,
+    confidence_score FLOAT,
+    reinforcement_count INT DEFAULT 0,
+    status TEXT DEFAULT 'active',
+    created_from_conversation_id TEXT,
+    category TEXT,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+```
 
 ## License
 
